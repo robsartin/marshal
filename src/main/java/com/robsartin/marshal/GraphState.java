@@ -1,0 +1,141 @@
+package com.robsartin.marshal;
+
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Map;
+import java.util.Set;
+
+public final class GraphState implements Invariant {
+
+    private final Map<Node, NodeSpec> specs = new IdentityHashMap<>();
+    private final Map<Node, Status> status = new IdentityHashMap<>();
+    private final Map<Node, Set<Node>> successors = new IdentityHashMap<>();
+    private final Map<Node, Set<Node>> predecessors = new IdentityHashMap<>();
+    private final Map<Node, Set<Node>> conflicts = new IdentityHashMap<>();
+    private final Map<Node, Integer> remainingPreds = new IdentityHashMap<>();
+
+    private static Set<Node> idSet() {
+        return Collections.newSetFromMap(new IdentityHashMap<>());
+    }
+
+    // ---- mutation -------------------------------------------------------
+
+    public void addNode(NodeSpec spec) {
+        Node n = spec.behavior();
+        if (specs.containsKey(n)) return;                 // idempotent
+        specs.put(n, spec);
+        status.put(n, Status.WAITING);
+        successors.put(n, idSet());
+        predecessors.put(n, idSet());
+        conflicts.put(n, idSet());
+        remainingPreds.put(n, 0);
+        for (Node p : spec.predecessors()) addEdge(p, n);
+        for (Node c : spec.conflicts()) addConflict(n, c);
+        assert holds();
+    }
+
+    public void addEdge(Node predecessor, Node successor) {
+        require(predecessor);
+        require(successor);
+        if (successors.get(predecessor).add(successor)) {
+            predecessors.get(successor).add(predecessor);
+            if (status.get(predecessor) != Status.COMPLETED) {
+                remainingPreds.merge(successor, 1, Integer::sum);
+            }
+        }
+        assert holds();
+    }
+
+    public void removeEdge(Node predecessor, Node successor) {
+        if (successors.getOrDefault(predecessor, Set.of()).remove(successor)) {
+            predecessors.get(successor).remove(predecessor);
+            if (status.get(predecessor) != Status.COMPLETED) {
+                remainingPreds.merge(successor, -1, Integer::sum);
+            }
+        }
+        assert holds();
+    }
+
+    public void removeNode(Node n) {
+        if (!specs.containsKey(n)) return;
+        for (Node s : Set.copyOf(successors.get(n))) removeEdge(n, s);
+        for (Node p : Set.copyOf(predecessors.get(n))) removeEdge(p, n);
+        for (Node c : Set.copyOf(conflicts.get(n))) removeConflict(n, c);
+        specs.remove(n);
+        status.remove(n);
+        successors.remove(n);
+        predecessors.remove(n);
+        conflicts.remove(n);
+        remainingPreds.remove(n);
+        assert holds();
+    }
+
+    // addConflict/removeConflict fully exercised in Task 2b; defined here so invariant() is complete.
+    public void addConflict(Node a, Node b) {
+        require(a); require(b);
+        if (a == b) throw new IllegalArgumentException("a node cannot conflict with itself");
+        conflicts.get(a).add(b);
+        conflicts.get(b).add(a);
+        assert holds();
+    }
+
+    public void removeConflict(Node a, Node b) {
+        conflicts.getOrDefault(a, Set.of()).remove(b);
+        conflicts.getOrDefault(b, Set.of()).remove(a);
+        assert holds();
+    }
+
+    // ---- queries --------------------------------------------------------
+
+    public boolean contains(Node n) { return specs.containsKey(n); }
+    public Set<Node> nodes() { return Collections.unmodifiableSet(specs.keySet()); }
+    public Status status(Node n) { return status.get(n); }
+    public NodeSpec spec(Node n) { return specs.get(n); }
+    public int remainingPreds(Node n) { return remainingPreds.get(n); }
+    public Set<Node> successors(Node n) { return Collections.unmodifiableSet(successors.get(n)); }
+    public Set<Node> predecessors(Node n) { return Collections.unmodifiableSet(predecessors.get(n)); }
+    public Set<Node> conflicts(Node n) { return Collections.unmodifiableSet(conflicts.get(n)); }
+
+    public boolean wouldIntroduceCycle(Node predecessor, Node successor) {
+        // adding predecessor->successor creates a cycle iff predecessor is already reachable from successor
+        if (predecessor == successor) return true;
+        var stack = new ArrayDeque<Node>();
+        var seen = idSet();
+        stack.push(successor);
+        while (!stack.isEmpty()) {
+            Node cur = stack.pop();
+            if (cur == predecessor) return true;
+            if (!seen.add(cur)) continue;
+            for (Node s : successors.getOrDefault(cur, Set.of())) stack.push(s);
+        }
+        return false;
+    }
+
+    // ---- invariant ------------------------------------------------------
+
+    private boolean holds() { invariant(); return true; }
+
+    @Override
+    public void invariant() {
+        for (Node a : specs.keySet()) {
+            if (conflicts.get(a).contains(a)) throw new IllegalStateException("conflict irreflexive violated: " + a);
+            for (Node b : successors.get(a)) {
+                if (!specs.containsKey(b)) throw new IllegalStateException("dangling successor " + b);
+                if (!predecessors.get(b).contains(a)) throw new IllegalStateException("transpose violated: " + a + "->" + b);
+            }
+            for (Node b : conflicts.get(a)) {
+                if (!specs.containsKey(b)) throw new IllegalStateException("dangling conflict " + b);
+                if (!conflicts.get(b).contains(a)) throw new IllegalStateException("conflict symmetry violated: " + a + "," + b);
+            }
+            long unmet = predecessors.get(a).stream().filter(p -> status.get(p) != Status.COMPLETED).count();
+            if (remainingPreds.get(a) != unmet) {
+                throw new IllegalStateException("remainingPreds stale for " + a + ": " + remainingPreds.get(a) + " != " + unmet);
+            }
+        }
+    }
+
+    private void require(Node n) {
+        if (!specs.containsKey(n)) throw new IllegalArgumentException("unknown node: " + n);
+    }
+}
