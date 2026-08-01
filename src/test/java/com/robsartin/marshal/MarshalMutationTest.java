@@ -43,4 +43,38 @@ class MarshalMutationTest {
 
         assertThat(r.statusOf(a)).isEqualTo(Status.FAILED);
     }
+
+    @Test
+    void danglingReferenceMutationFailsOriginNodeAndRunCompletes() {
+        Marshal m = newMarshal();
+        Node x = ctx -> {};
+        Node y = ctx -> {};
+        // x and y are never registered; wiring an edge between them is a dangling reference.
+        Node origin = ctx -> ctx.addEdge(x, y);
+        Node independent = ctx -> {};
+        m.register(NodeSpec.of(origin).name("origin").build());
+        m.register(NodeSpec.of(independent).name("independent").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
+        assertThat(r.statusOf(independent)).isEqualTo(Status.COMPLETED);
+    }
+
+    @Test
+    void failingNodeMutationsAreNotApplied() {
+        Marshal m = newMarshal();
+        Node child = ctx -> {};
+        NodeSpec childSpec = NodeSpec.of(child).name("child").build();
+        Node origin = ctx -> {
+            ctx.addNode(childSpec);
+            throw new RuntimeException("boom");
+        };
+        m.register(NodeSpec.of(origin).name("origin").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
+        assertThat(r.statusOf(child)).isNull();
+    }
 }

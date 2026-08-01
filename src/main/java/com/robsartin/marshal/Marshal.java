@@ -16,9 +16,14 @@ import java.util.concurrent.LinkedBlockingQueue;
  * drives an event loop to quiescence.
  *
  * <p>On successful completion, a node's buffered mutations ({@link BufferingExecutionContext})
- * are validated and applied atomically to the graph before the node is marked completed. If any
- * mutation in the batch is invalid (e.g. an edge that would introduce a cycle), the whole batch
- * is rejected and the node is marked {@link Status#FAILED} instead, so its dependents skip.
+ * are fully validated against the graph before any of them are applied, then applied to the
+ * graph before the node is marked completed. Validating the whole batch up front (rather than
+ * catching failures mid-apply) is what makes rejection atomic: if any mutation in the batch is
+ * invalid (e.g. an edge or conflict referencing a node the batch never adds, or an edge that
+ * would introduce a cycle), nothing in the batch is applied and the node is marked {@link
+ * Status#FAILED} instead, so its dependents skip. See {@link #applyMutations} for the exact
+ * validation rules and a documented limitation around cycles formed entirely through
+ * same-batch-added nodes.
  *
  * <p>MVP scope: node timeouts are not enforced (Task 9).
  */
@@ -120,22 +125,62 @@ public final class Marshal {
     }
 
     /**
-     * Validates a completing node's buffered mutation batch, then applies it atomically. If any
-     * mutation is invalid (currently: an {@link Mutation.AddEdge} that would introduce a cycle
-     * between two nodes already present in the graph), no mutation in the batch is applied and
-     * {@link MutationRejected} is thrown; the caller marks the originating node {@link
-     * Status#FAILED}.
+     * Validates a completing node's buffered mutation batch, then applies it. Validation runs
+     * entirely before any mutation is applied, so a rejected batch is atomic: nothing in it is
+     * applied and none of {@link GraphState}'s own precondition checks (which throw raw {@link
+     * IllegalArgumentException}/{@link IllegalStateException}, not {@link MutationRejected}) can
+     * be reached during the apply pass. If any mutation is invalid, {@link MutationRejected} is
+     * thrown and the caller marks the originating node {@link Status#FAILED}.
+     *
+     * <p>Validation simulates the batch's node membership in buffer order (an {@link
+     * Mutation.AddNode} makes its node valid to reference later in the same batch; an {@link
+     * Mutation.RemoveNode} makes it invalid to reference later) and rejects:
+     *
+     * <ul>
+     *   <li>an {@link Mutation.AddEdge} or {@link Mutation.AddConflict} referencing a node not
+     *       present at that point in the batch ("dangling reference")
+     *   <li>an {@link Mutation.AddConflict} between a node and itself
+     *   <li>an {@link Mutation.AddEdge} that would introduce a cycle, checked against the current
+     *       graph ({@code g}) for edges whose endpoints both already exist there
+     * </ul>
+     *
+     * <p><b>Minor limitation:</b> a cycle formed entirely through nodes added earlier in the same
+     * batch is not detected here, since {@link GraphState#wouldIntroduceCycle} is only consulted
+     * for endpoints that exist in {@code g} before this batch. This does not corrupt the graph or
+     * crash the scheduler — {@link GraphState}'s {@code invariant()} does not enforce acyclicity —
+     * it just leaves the affected nodes {@link Status#UNREACHABLE} at quiescence (their
+     * predecessor count never reaches zero). Full mid-batch cycle validation is out of scope here.
      *
      * <p>Mutations are applied in buffer order, matching {@link BufferingExecutionContext}'s call
      * order (callers add a node before wiring edges to it).
      */
     private void applyMutations(Node origin, List<Mutation> batch) {
+        Set<Node> present = Collections.newSetFromMap(new IdentityHashMap<>());
+        present.addAll(g.nodes());
         for (Mutation mu : batch) {
-            if (mu instanceof Mutation.AddEdge e) {
-                if (g.contains(e.predecessor())
-                        && g.contains(e.successor())
-                        && g.wouldIntroduceCycle(e.predecessor(), e.successor())) {
-                    throw new MutationRejected("edge would introduce a cycle: " + e);
+            switch (mu) {
+                case Mutation.AddNode a -> present.add(a.spec().behavior());
+                case Mutation.RemoveNode rn -> present.remove(rn.node());
+                case Mutation.AddEdge e -> {
+                    if (!present.contains(e.predecessor()) || !present.contains(e.successor())) {
+                        throw new MutationRejected("dangling edge reference: " + e);
+                    }
+                    if (g.contains(e.predecessor())
+                            && g.contains(e.successor())
+                            && g.wouldIntroduceCycle(e.predecessor(), e.successor())) {
+                        throw new MutationRejected("edge would introduce a cycle: " + e);
+                    }
+                }
+                case Mutation.RemoveEdge e -> {
+                    // GraphState.removeEdge no-ops on an unknown edge/node; nothing to validate.
+                }
+                case Mutation.AddConflict cf -> {
+                    if (!present.contains(cf.a()) || !present.contains(cf.b())) {
+                        throw new MutationRejected("dangling conflict reference: " + cf);
+                    }
+                    if (cf.a() == cf.b()) {
+                        throw new MutationRejected("self-conflict: " + cf);
+                    }
                 }
             }
         }
