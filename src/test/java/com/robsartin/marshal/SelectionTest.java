@@ -19,10 +19,9 @@ class SelectionTest {
         g.addNode(NodeSpec.of(hi).priority(10).build());
         g.addNode(NodeSpec.of(lo).priority(1).build());
         g.addNode(NodeSpec.of(foe).priority(5).build());
-        g.addConflict(hi, foe);                              // hi and foe cannot co-run
+        g.addConflict(hi, foe); // hi and foe cannot co-run
 
-        List<Selection.Dispatch> out =
-            Selection.select(g, idSet(hi, lo, foe), idSet(), 8, 8);
+        List<Selection.Dispatch> out = Selection.select(g, idSet(hi, lo, foe), idSet(), 8, 8);
 
         // hi wins on priority; foe is then blocked by the just-selected hi; lo also dispatched
         assertThat(out).extracting(Selection.Dispatch::node).containsExactly(hi, lo);
@@ -36,8 +35,7 @@ class SelectionTest {
         g.addNode(NodeSpec.of(cpu2).priority(8).kind(ExecutionKind.CPU).build());
         g.addNode(NodeSpec.of(io1).priority(1).kind(ExecutionKind.IO).build());
 
-        List<Selection.Dispatch> out =
-            Selection.select(g, idSet(cpu1, cpu2, io1), idSet(), 1, 8);   // only 1 CPU permit
+        List<Selection.Dispatch> out = Selection.select(g, idSet(cpu1, cpu2, io1), idSet(), 1, 8); // only 1 CPU permit
 
         assertThat(out).extracting(Selection.Dispatch::node).containsExactly(cpu1, io1);
     }

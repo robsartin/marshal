@@ -9,7 +9,9 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class GraphStateEdgesTest {
-    private static NodeSpec spec(Node n) { return NodeSpec.of(n).build(); }
+    private static NodeSpec spec(Node n) {
+        return NodeSpec.of(n).build();
+    }
 
     @Test
     void addEdgeMaintainsBothDirectionsAndRemainingCount() {
@@ -23,7 +25,7 @@ class GraphStateEdgesTest {
         assertThat(g.predecessors(b)).containsExactly(a);
         assertThat(g.remainingPreds(b)).isEqualTo(1);
         assertThat(g.remainingPreds(a)).isEqualTo(0);
-        g.invariant();                    // must not throw
+        g.invariant(); // must not throw
     }
 
     @Test
@@ -45,18 +47,22 @@ class GraphStateEdgesTest {
     void wouldIntroduceCycleDetectsBackEdge() {
         GraphState g = new GraphState();
         Node a = ctx -> {}, b = ctx -> {}, c = ctx -> {};
-        g.addNode(spec(a)); g.addNode(spec(b)); g.addNode(spec(c));
+        g.addNode(spec(a));
+        g.addNode(spec(b));
+        g.addNode(spec(c));
         g.addEdge(a, b);
         g.addEdge(b, c);
-        assertThat(g.wouldIntroduceCycle(c, a)).isTrue();   // c->a closes a->b->c->a
-        assertThat(g.wouldIntroduceCycle(a, c)).isFalse();  // a->c is a valid forward edge
+        assertThat(g.wouldIntroduceCycle(c, a)).isTrue(); // c->a closes a->b->c->a
+        assertThat(g.wouldIntroduceCycle(a, c)).isFalse(); // a->c is a valid forward edge
     }
 
     @Test
     void invariantHoldsAfterAddAndRemoveEdgesInBothOrders() {
         GraphState g = new GraphState();
         Node a = ctx -> {}, b = ctx -> {}, c = ctx -> {};
-        g.addNode(spec(a)); g.addNode(spec(b)); g.addNode(spec(c));
+        g.addNode(spec(a));
+        g.addNode(spec(b));
+        g.addNode(spec(c));
 
         g.addEdge(a, b);
         g.addEdge(b, c);

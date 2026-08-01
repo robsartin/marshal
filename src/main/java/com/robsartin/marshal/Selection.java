@@ -8,11 +8,11 @@ public final class Selection {
     public record Dispatch(Node node, ExecutionKind lane) {}
 
     public static List<Dispatch> select(
-            GraphState g, Set<Node> ready, Set<Node> running,
-            int freeCpuPermits, int freeIoPermits) {
+            GraphState g, Set<Node> ready, Set<Node> running, int freeCpuPermits, int freeIoPermits) {
 
         List<Node> candidates = new ArrayList<>(ready);
-        candidates.sort(Comparator.comparingInt((Node n) -> g.spec(n).priority()).reversed());
+        candidates.sort(
+                Comparator.comparingInt((Node n) -> g.spec(n).priority()).reversed());
 
         Set<Node> committed = Collections.newSetFromMap(new IdentityHashMap<>());
         committed.addAll(running);

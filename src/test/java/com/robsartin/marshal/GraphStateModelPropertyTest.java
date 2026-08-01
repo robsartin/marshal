@@ -70,7 +70,10 @@ class GraphStateModelPropertyTest {
     Arbitrary<List<Command>> commands() {
         Arbitrary<Kind> kinds = Arbitraries.of(Kind.values());
         Arbitrary<Integer> indices = Arbitraries.integers().between(0, 20);
-        return Combinators.combine(kinds, indices, indices).as(Command::new).list().ofMaxSize(40);
+        return Combinators.combine(kinds, indices, indices)
+                .as(Command::new)
+                .list()
+                .ofMaxSize(40);
     }
 
     private static void apply(Command cmd, GraphState engine, ReferenceGraphModel oracle, List<Node> created) {
@@ -92,10 +95,7 @@ class GraphStateModelPropertyTest {
                 if (created.size() >= 2) {
                     Node a = created.get(cmd.i1() % created.size());
                     Node b = created.get(cmd.i2() % created.size());
-                    if (a != b
-                            && engine.contains(a)
-                            && engine.contains(b)
-                            && !engine.wouldIntroduceCycle(a, b)) {
+                    if (a != b && engine.contains(a) && engine.contains(b) && !engine.wouldIntroduceCycle(a, b)) {
                         engine.addEdge(a, b);
                         oracle.addEdge(a, b);
                         applied = true;

@@ -22,12 +22,12 @@ class NodeSpecTest {
     @Test
     void canonicalConstructorRejectsNullBehaviorAndCopiesSets() {
         assertThatThrownBy(() -> new NodeSpec(null, 0, null, ExecutionKind.IO, Set.of(), Set.of(), null))
-            .isInstanceOf(NullPointerException.class);
+                .isInstanceOf(NullPointerException.class);
         Set<Node> preds = new java.util.HashSet<>();
         Node a = ctx -> {};
         preds.add(a);
         NodeSpec spec = new NodeSpec(ctx -> {}, 0, Duration.ofSeconds(1), ExecutionKind.CPU, preds, Set.of(), "x");
-        preds.clear();                                   // must not affect the spec (defensive copy)
+        preds.clear(); // must not affect the spec (defensive copy)
         assertThat(spec.predecessors()).containsExactly(a);
     }
 }

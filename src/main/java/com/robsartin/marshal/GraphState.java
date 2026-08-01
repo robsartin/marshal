@@ -29,7 +29,7 @@ public final class GraphState implements Invariant {
 
     public void addNode(NodeSpec spec) {
         Node n = spec.behavior();
-        if (specs.containsKey(n)) return;                 // idempotent
+        if (specs.containsKey(n)) return; // idempotent
         specs.put(n, spec);
         status.put(n, Status.WAITING);
         successors.put(n, idSet());
@@ -79,7 +79,8 @@ public final class GraphState implements Invariant {
 
     // addConflict/removeConflict fully exercised in Task 2b; defined here so invariant() is complete.
     public void addConflict(Node a, Node b) {
-        require(a); require(b);
+        require(a);
+        require(b);
         if (a == b) throw new IllegalArgumentException("a node cannot conflict with itself");
         conflicts.get(a).add(b);
         conflicts.get(b).add(a);
@@ -124,9 +125,13 @@ public final class GraphState implements Invariant {
 
     private void skip(Node n) {
         Status cur = status.get(n);
-        if (cur == Status.COMPLETED || cur == Status.FAILED || cur == Status.TIMED_OUT
-                || cur == Status.SKIPPED || cur == Status.RUNNING || cur == Status.UNREACHABLE) {
-            return;                       // already terminal or in-flight; do not disturb
+        if (cur == Status.COMPLETED
+                || cur == Status.FAILED
+                || cur == Status.TIMED_OUT
+                || cur == Status.SKIPPED
+                || cur == Status.RUNNING
+                || cur == Status.UNREACHABLE) {
+            return; // already terminal or in-flight; do not disturb
         }
         status.put(n, Status.SKIPPED);
         for (Node s : Set.copyOf(successors.get(n))) skip(s);
@@ -149,14 +154,37 @@ public final class GraphState implements Invariant {
 
     // ---- queries --------------------------------------------------------
 
-    public boolean contains(Node n) { return specs.containsKey(n); }
-    public Set<Node> nodes() { return Collections.unmodifiableSet(specs.keySet()); }
-    public Status status(Node n) { return status.get(n); }
-    public NodeSpec spec(Node n) { return specs.get(n); }
-    public int remainingPreds(Node n) { return remainingPreds.get(n); }
-    public Set<Node> successors(Node n) { return Collections.unmodifiableSet(successors.get(n)); }
-    public Set<Node> predecessors(Node n) { return Collections.unmodifiableSet(predecessors.get(n)); }
-    public Set<Node> conflicts(Node n) { return Collections.unmodifiableSet(conflicts.get(n)); }
+    public boolean contains(Node n) {
+        return specs.containsKey(n);
+    }
+
+    public Set<Node> nodes() {
+        return Collections.unmodifiableSet(specs.keySet());
+    }
+
+    public Status status(Node n) {
+        return status.get(n);
+    }
+
+    public NodeSpec spec(Node n) {
+        return specs.get(n);
+    }
+
+    public int remainingPreds(Node n) {
+        return remainingPreds.get(n);
+    }
+
+    public Set<Node> successors(Node n) {
+        return Collections.unmodifiableSet(successors.get(n));
+    }
+
+    public Set<Node> predecessors(Node n) {
+        return Collections.unmodifiableSet(predecessors.get(n));
+    }
+
+    public Set<Node> conflicts(Node n) {
+        return Collections.unmodifiableSet(conflicts.get(n));
+    }
 
     public boolean wouldIntroduceCycle(Node predecessor, Node successor) {
         // adding predecessor->successor creates a cycle iff predecessor is already reachable from successor
@@ -175,7 +203,10 @@ public final class GraphState implements Invariant {
 
     // ---- invariant ------------------------------------------------------
 
-    private boolean holds() { invariant(); return true; }
+    private boolean holds() {
+        invariant();
+        return true;
+    }
 
     @Override
     public void invariant() {
@@ -183,19 +214,25 @@ public final class GraphState implements Invariant {
             if (conflicts.get(a).contains(a)) throw new IllegalStateException("conflict irreflexive violated: " + a);
             for (Node b : successors.get(a)) {
                 if (!specs.containsKey(b)) throw new IllegalStateException("dangling successor " + b);
-                if (!predecessors.get(b).contains(a)) throw new IllegalStateException("transpose violated: " + a + "->" + b);
+                if (!predecessors.get(b).contains(a))
+                    throw new IllegalStateException("transpose violated: " + a + "->" + b);
             }
             for (Node p : predecessors.get(a)) {
                 if (!specs.containsKey(p)) throw new IllegalStateException("dangling predecessor " + p);
-                if (!successors.get(p).contains(a)) throw new IllegalStateException("transpose violated: " + p + "->" + a);
+                if (!successors.get(p).contains(a))
+                    throw new IllegalStateException("transpose violated: " + p + "->" + a);
             }
             for (Node b : conflicts.get(a)) {
                 if (!specs.containsKey(b)) throw new IllegalStateException("dangling conflict " + b);
-                if (!conflicts.get(b).contains(a)) throw new IllegalStateException("conflict symmetry violated: " + a + "," + b);
+                if (!conflicts.get(b).contains(a))
+                    throw new IllegalStateException("conflict symmetry violated: " + a + "," + b);
             }
-            long unmet = predecessors.get(a).stream().filter(p -> status.get(p) != Status.COMPLETED).count();
+            long unmet = predecessors.get(a).stream()
+                    .filter(p -> status.get(p) != Status.COMPLETED)
+                    .count();
             if (remainingPreds.get(a) != unmet) {
-                throw new IllegalStateException("remainingPreds stale for " + a + ": " + remainingPreds.get(a) + " != " + unmet);
+                throw new IllegalStateException(
+                        "remainingPreds stale for " + a + ": " + remainingPreds.get(a) + " != " + unmet);
             }
         }
     }

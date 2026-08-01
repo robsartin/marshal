@@ -7,7 +7,7 @@ import java.util.Set;
 public record NodeSpec(
         Node behavior,
         int priority,
-        Duration timeout,          // null == no timeout
+        Duration timeout, // null == no timeout
         ExecutionKind kind,
         Set<Node> predecessors,
         Set<Node> conflicts,
@@ -36,14 +36,39 @@ public record NodeSpec(
         private Set<Node> conflicts = Set.of();
         private String name = null;
 
-        private Builder(Node behavior) { this.behavior = behavior; }
+        private Builder(Node behavior) {
+            this.behavior = behavior;
+        }
 
-        public Builder priority(int p) { this.priority = p; return this; }
-        public Builder timeout(Duration t) { this.timeout = t; return this; }
-        public Builder kind(ExecutionKind k) { this.kind = k; return this; }
-        public Builder predecessors(Set<Node> p) { this.predecessors = p; return this; }
-        public Builder conflicts(Set<Node> c) { this.conflicts = c; return this; }
-        public Builder name(String n) { this.name = n; return this; }
+        public Builder priority(int p) {
+            this.priority = p;
+            return this;
+        }
+
+        public Builder timeout(Duration t) {
+            this.timeout = t;
+            return this;
+        }
+
+        public Builder kind(ExecutionKind k) {
+            this.kind = k;
+            return this;
+        }
+
+        public Builder predecessors(Set<Node> p) {
+            this.predecessors = p;
+            return this;
+        }
+
+        public Builder conflicts(Set<Node> c) {
+            this.conflicts = c;
+            return this;
+        }
+
+        public Builder name(String n) {
+            this.name = n;
+            return this;
+        }
 
         public NodeSpec build() {
             return new NodeSpec(behavior, priority, timeout, kind, predecessors, conflicts, name);
