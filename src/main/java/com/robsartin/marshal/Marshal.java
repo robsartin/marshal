@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 
 /**
@@ -61,6 +62,25 @@ public final class Marshal {
         this.cpuLane = cpuLane;
         this.cpuPermits = cpuPermits;
         this.timeouts = timeouts;
+    }
+
+    /**
+     * Production factory: virtual-thread-per-task IO lane, a fixed CPU-bound thread pool sized to
+     * {@link Runtime#availableProcessors()}, that same processor count as the CPU permit budget,
+     * and a real {@link ScheduledTimeouts} watchdog.
+     */
+    public static Marshal create() {
+        int processors = Runtime.getRuntime().availableProcessors();
+        return new Marshal(
+                Executors.newVirtualThreadPerTaskExecutor(),
+                Executors.newFixedThreadPool(processors),
+                processors,
+                new ScheduledTimeouts());
+    }
+
+    /** Production factory with explicit lanes, CPU permit budget, and timeout policy. */
+    public static Marshal create(int cpuPermits, Executor ioLane, Executor cpuLane, Timeouts timeouts) {
+        return new Marshal(ioLane, cpuLane, cpuPermits, timeouts);
     }
 
     public Node register(NodeSpec spec) {
