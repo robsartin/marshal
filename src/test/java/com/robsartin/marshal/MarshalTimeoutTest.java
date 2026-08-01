@@ -66,7 +66,7 @@ class MarshalTimeoutTest {
     void fourArgCreateFactoryProducesAWorkingMarshal() {
         var inline = new InlineExecutor();
         ManualTimeouts timeouts = new ManualTimeouts();
-        Marshal m = Marshal.create(4, inline, inline, timeouts);
+        Marshal m = Marshal.create(inline, inline, 4, timeouts);
         Node n = ctx -> {};
         m.register(NodeSpec.of(n).name("n").build());
 
