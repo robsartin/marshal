@@ -6,6 +6,8 @@ import com.robsartin.marshal.support.InlineExecutor;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -220,6 +222,37 @@ class MarshalMutationTest {
         assertThat(r.statusOf(origin)).isEqualTo(Status.COMPLETED);
         assertThat(r.statusOf(x)).isEqualTo(Status.UNREACHABLE);
         assertThat(r.statusOf(y)).isEqualTo(Status.UNREACHABLE);
+    }
+
+    @Test
+    void removeNodeMutationOfAGenuinelyRunningNodeIsRejectedAndOriginFails() throws Exception {
+        // Uses Marshal.create() (real worker threads, unbounded IO lane) so runningNode is
+        // genuinely Status.RUNNING -- not yet processed as Completed by the scheduler thread --
+        // at the moment origin's completion is validated. Before the fix, applyMutations never
+        // checks RUNNING for a RemoveNode, so g.removeNode(runningNode) would erase it from the
+        // graph out from under its own in-flight worker: origin would wrongly complete, and
+        // runningNode's later Completed would be silently dropped (its CPU permit -- if it were a
+        // CPU node -- leaked, and it would vanish from the report instead of reaching COMPLETED).
+        Marshal m = Marshal.create();
+        CountDownLatch hold = new CountDownLatch(1);
+        Node runningNode = ctx -> {
+            try {
+                // Never counted down: this bounded wait just keeps runningNode occupying its
+                // worker thread (genuinely RUNNING) for longer than origin needs to complete and
+                // have its removeNode(runningNode) batch validated.
+                hold.await(1, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        Node origin = ctx -> ctx.removeNode(runningNode);
+        m.register(NodeSpec.of(runningNode).name("runningNode").build());
+        m.register(NodeSpec.of(origin).name("origin").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
+        assertThat(r.statusOf(runningNode)).isEqualTo(Status.COMPLETED);
     }
 
     @Test

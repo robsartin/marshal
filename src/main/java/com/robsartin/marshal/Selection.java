@@ -2,6 +2,15 @@ package com.robsartin.marshal;
 
 import java.util.*;
 
+/**
+ * Picks which ready nodes to dispatch, in priority order. {@code select}'s sort is stable, but
+ * {@code ready} is an identity-backed {@link Set}, so ties between nodes of <em>equal</em>
+ * priority break in that set's iteration order — effectively identity-hash order — which is
+ * unspecified and can differ across JVM runs. A run is only deterministic in the strong sense
+ * (identical dispatch order every time) when all ready nodes' priorities are pairwise distinct;
+ * with equal-priority ties, the order among those tied nodes is merely stable-within-a-run, not
+ * reproducible across runs.
+ */
 public final class Selection {
     private Selection() {}
 

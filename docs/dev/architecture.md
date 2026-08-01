@@ -39,6 +39,34 @@ it only ever blocks on `events.take()`.
                                    report()
 ```
 
+`Marshal` owns exactly three cross-thread structures besides `GraphState` itself,
+and all three are thread-safe by construction (unlike `GraphState`, which relies
+entirely on never being touched off the owner thread):
+
+1. **`events` (`BlockingQueue<Event>`)** — worker threads and the timeout/watchdog
+   thread post `Event.Completed`/`Event.TimedOut`; the owner thread is the sole
+   consumer via `events.take()`.
+2. **`workerThreads` (`Collections.synchronizedMap(new IdentityHashMap<>())`)** —
+   written by a worker thread just before it calls `Node.execute()`, read by the
+   timeout/watchdog thread (to `interrupt()` a timed-out worker).
+3. **`completedNodes` (`Collections.synchronizedSet(Collections.newSetFromMap(new
+   IdentityHashMap<>()))`)** — written by the owner/scheduler thread the moment a
+   node's completion is accepted (right alongside `g.markCompleted(n)`), read by
+   *any* worker thread via `ctx.isCompleted(node)` while its node is executing.
+   This is what backs `BufferingExecutionContext`'s `isCompleted` — a running
+   node's `execute()` needs a live, thread-safe "has X completed?" membership
+   check, and `completedNodes` gives it one without ever reading `GraphState`
+   itself. (`GraphState.isCompletedSafe` still exists and is still exercised by
+   its own unit tests, but `Marshal` no longer calls it — before this structure
+   existed, `dispatch()` handed worker threads `g::isCompletedSafe`, which read
+   `GraphState`'s unsynchronized `status` `IdentityHashMap` directly off the
+   owner thread's write path: a genuine cross-thread data race, not just a
+   theoretical one.)
+
+None of these three ever exposes `GraphState`'s own maps to a second thread, so
+"the owner thread is the only thing that ever touches `GraphState`" (the opening
+claim of this section) still holds exactly.
+
 `Marshal.run()` itself runs on whatever thread calls it (there's no dedicated
 scheduler thread spun up internally) — it *becomes* the owner thread for the
 duration of the run by being the only thread that ever calls into `GraphState`
@@ -130,6 +158,13 @@ function, which is why it's unit-testable with zero threads (see
 it deterministically returns the dispatch list, picking the highest-priority
 ready node whose conflicts don't intersect `running` and whose lane has a free
 permit, repeating until no such node remains.
+
+**Note on determinism:** `select`'s sort is stable, but the `ready` set it sorts
+is identity-backed, so ties among nodes of *equal* priority break in that set's
+iteration order (effectively identity-hash order) — unspecified and not
+reproducible across JVM runs. Dispatch order is only guaranteed identical
+run-to-run when every ready node's priority is pairwise distinct; equal-priority
+ties are merely stable *within* a single run, not across runs.
 
 ## 5. The timeout model (interrupt + report)
 

@@ -53,6 +53,13 @@ public final class Marshal {
     // (to interrupt the worker) — must be a thread-safe map.
     private final Map<Node, Thread> workerThreads = Collections.synchronizedMap(new IdentityHashMap<>());
 
+    // Written on the scheduler thread (when a node completes SUCCESSFULLY), read on worker
+    // threads (via ctx.isCompleted()) — must be thread-safe. This exists so a running node's
+    // execute() can answer "has node X completed?" without ever touching GraphState, which is
+    // otherwise exclusively owned by the scheduler thread (see docs/dev/architecture.md §1).
+    private final Set<Node> completedNodes =
+            Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<>()));
+
     public Marshal(Executor ioLane, Executor cpuLane, int cpuPermits) {
         this(ioLane, cpuLane, cpuPermits, NO_OP_TIMEOUTS);
     }
@@ -132,6 +139,7 @@ public final class Marshal {
                     try {
                         applyMutations(n, c.mutations());
                         g.markCompleted(n);
+                        completedNodes.add(n);
                     } catch (MutationRejected rejected) {
                         g.fail(n, Status.FAILED);
                         failures.put(n, rejected);
@@ -188,7 +196,7 @@ public final class Marshal {
         Executor lane = d.lane() == ExecutionKind.CPU ? cpuLane : ioLane;
         lane.execute(() -> {
             workerThreads.put(n, Thread.currentThread());
-            BufferingExecutionContext ctx = new BufferingExecutionContext(g::isCompletedSafe);
+            BufferingExecutionContext ctx = new BufferingExecutionContext(completedNodes::contains);
             Outcome outcome;
             try {
                 n.execute(ctx);
@@ -228,6 +236,10 @@ public final class Marshal {
      *   <li>an {@link Mutation.AddConflict} between a node and itself
      *   <li>an {@link Mutation.AddEdge} that would introduce a cycle, checked against the current
      *       graph ({@code g}) for edges whose endpoints both already exist there
+     *   <li>a {@link Mutation.RemoveNode} targeting a node that is currently {@link
+     *       Status#RUNNING} on another worker — removing an in-flight node would lose its
+     *       eventual outcome and leak its lane permit (its later {@code Completed} event would
+     *       find the node gone from {@code GraphState} and be silently skipped)
      * </ul>
      *
      * <p><b>Minor limitation:</b> a cycle formed entirely through nodes added earlier in the same
@@ -263,7 +275,18 @@ public final class Marshal {
                     }
                     present.add(self);
                 }
-                case Mutation.RemoveNode rn -> present.remove(rn.node());
+                case Mutation.RemoveNode rn -> {
+                    // A node currently RUNNING on another worker cannot be removed: its worker is
+                    // in flight and will eventually post a Completed for it. If we let it vanish
+                    // from GraphState here, that later Completed finds g.status(n) == null (not
+                    // RUNNING) and is silently skipped by the idempotency guard in run() — freeing
+                    // no CPU permit if it held one (a permit leak) and dropping the node from the
+                    // RunReport entirely instead of reporting its real outcome.
+                    if (g.contains(rn.node()) && g.status(rn.node()) == Status.RUNNING) {
+                        throw new MutationRejected("cannot remove a RUNNING node: " + rn.node());
+                    }
+                    present.remove(rn.node());
+                }
                 case Mutation.AddEdge e -> {
                     if (!present.contains(e.predecessor()) || !present.contains(e.successor())) {
                         throw new MutationRejected("dangling edge reference: " + e);
