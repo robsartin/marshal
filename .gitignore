@@ -1,0 +1,16 @@
+# Build
+build/
+.gradle/
+target/
+out/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
