@@ -166,6 +166,11 @@ public final class GraphState implements Invariant {
         return status.get(n);
     }
 
+    /** Null-safe completed check; unknown nodes are treated as not completed. */
+    public boolean isCompletedSafe(Node n) {
+        return status.get(n) == Status.COMPLETED;
+    }
+
     public NodeSpec spec(Node n) {
         return specs.get(n);
     }
