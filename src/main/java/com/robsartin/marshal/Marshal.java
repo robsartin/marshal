@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 
@@ -32,7 +33,7 @@ import java.util.concurrent.LinkedBlockingQueue;
  * Event.Completed}, the worker thread is interrupted and the node is marked {@link
  * Status#TIMED_OUT}. Honoring {@link Thread#interrupt()} is part of the {@link Node} contract.
  */
-public final class Marshal {
+public final class Marshal implements AutoCloseable {
     private static final Timeouts NO_OP_TIMEOUTS = new Timeouts() {
         @Override
         public void arm(Node node, Duration budget, Runnable onExpiry) {}
@@ -46,6 +47,13 @@ public final class Marshal {
     private final Executor cpuLane;
     private final int cpuPermits;
     private final Timeouts timeouts;
+
+    // True only for resources this Marshal built itself (via the no-arg create()); such resources
+    // are shut down on close() / after run(). Caller-supplied executors are never touched.
+    private final boolean ownsResources;
+
+    private boolean started;
+    private boolean closed;
     private final BlockingQueue<Event> events = new LinkedBlockingQueue<>();
     private final Map<Node, Throwable> failures = new IdentityHashMap<>();
 
@@ -61,14 +69,22 @@ public final class Marshal {
             Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<>()));
 
     public Marshal(Executor ioLane, Executor cpuLane, int cpuPermits) {
-        this(ioLane, cpuLane, cpuPermits, NO_OP_TIMEOUTS);
+        this(ioLane, cpuLane, cpuPermits, NO_OP_TIMEOUTS, false);
     }
 
     public Marshal(Executor ioLane, Executor cpuLane, int cpuPermits, Timeouts timeouts) {
+        this(ioLane, cpuLane, cpuPermits, timeouts, false);
+    }
+
+    // Package-private canonical constructor every other constructor and both factories funnel
+    // through. ownsResources is true only for the no-arg create() (which builds its own executors
+    // and timeouts); callers that supply their own resources always get ownsResources=false.
+    Marshal(Executor ioLane, Executor cpuLane, int cpuPermits, Timeouts timeouts, boolean ownsResources) {
         this.ioLane = ioLane;
         this.cpuLane = cpuLane;
         this.cpuPermits = cpuPermits;
         this.timeouts = timeouts;
+        this.ownsResources = ownsResources;
     }
 
     /**
@@ -82,12 +98,16 @@ public final class Marshal {
                 Executors.newVirtualThreadPerTaskExecutor(),
                 Executors.newFixedThreadPool(processors),
                 processors,
-                new ScheduledTimeouts());
+                new ScheduledTimeouts(),
+                true);
     }
 
-    /** Production factory with explicit lanes, CPU permit budget, and timeout policy. */
-    public static Marshal create(int cpuPermits, Executor ioLane, Executor cpuLane, Timeouts timeouts) {
-        return new Marshal(ioLane, cpuLane, cpuPermits, timeouts);
+    /**
+     * Production factory with explicit lanes, CPU permit budget, and timeout policy. The caller
+     * owns the supplied executors and timeouts, so this Marshal never shuts them down.
+     */
+    public static Marshal create(Executor ioLane, Executor cpuLane, int cpuPermits, Timeouts timeouts) {
+        return new Marshal(ioLane, cpuLane, cpuPermits, timeouts, false);
     }
 
     public Node register(NodeSpec spec) {
@@ -110,6 +130,49 @@ public final class Marshal {
     }
 
     public RunReport run() {
+        if (started) {
+            throw new IllegalStateException("Marshal.run() is single-use");
+        }
+        started = true;
+        try {
+            return drive();
+        } finally {
+            if (ownsResources) {
+                close();
+            }
+        }
+    }
+
+    /**
+     * Closes resources this Marshal owns (only those built by the no-arg {@link #create()}):
+     * {@code shutdownNow()} on any {@link ExecutorService} lanes and {@link AutoCloseable#close()}
+     * on the timeouts. Idempotent, and a no-op for caller-supplied resources.
+     */
+    @Override
+    public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        if (!ownsResources) {
+            return;
+        }
+        if (ioLane instanceof ExecutorService es) {
+            es.shutdownNow();
+        }
+        if (cpuLane instanceof ExecutorService es) {
+            es.shutdownNow();
+        }
+        if (timeouts instanceof AutoCloseable ac) {
+            try {
+                ac.close();
+            } catch (Exception e) {
+                throw new RuntimeException("failed to close timeouts", e);
+            }
+        }
+    }
+
+    private RunReport drive() {
         int freeCpu = cpuPermits;
         int inFlight = 0;
 
