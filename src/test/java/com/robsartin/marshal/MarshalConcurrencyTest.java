@@ -2,6 +2,8 @@ package com.robsartin.marshal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -39,24 +41,33 @@ class MarshalConcurrencyTest {
 
     @Test
     void independentNodesRunInParallel() throws Exception {
-        Marshal m = Marshal.create();
         int n = 4;
+        AtomicInteger concurrent = new AtomicInteger();
         AtomicInteger maxObserved = new AtomicInteger();
         CyclicBarrier barrier = new CyclicBarrier(n);
+        Marshal m = Marshal.create();
+        List<Node> nodes = new ArrayList<>();
 
-        Node[] ns = new Node[n];
-        for (int i = 0; i < ns.length; i++) {
-            ns[i] = ctx -> {
-                maxObserved.accumulateAndGet(barrier.getParties(), Math::max);
+        for (int i = 0; i < n; i++) {
+            Node node = ctx -> {
+                int now = concurrent.incrementAndGet();
+                maxObserved.accumulateAndGet(now, Math::max); // LIVE count, not getParties()
                 try {
-                    barrier.await(2, TimeUnit.SECONDS);
+                    barrier.await(2, TimeUnit.SECONDS); // forces all n to overlap; bounded so no infinite hang
                 } catch (Exception e) {
-                    throw new RuntimeException(e);
+                    throw new RuntimeException(e); // barrier timeout/broken -> node FAILS
                 }
+                concurrent.decrementAndGet();
             };
-            m.register(NodeSpec.of(ns[i]).kind(ExecutionKind.IO).build());
+            nodes.add(node);
+            m.register(NodeSpec.of(node).build());
         }
-        m.run();
-        assertThat(maxObserved.get()).isEqualTo(n); // all n rendezvoused: genuine parallelism
+
+        RunReport r = m.run();
+
+        assertThat(maxObserved.get()).isEqualTo(n); // only reachable if all n truly overlap
+        for (Node node : nodes) {
+            assertThat(r.statusOf(node)).isEqualTo(Status.COMPLETED); // barrier timeout -> FAILED, caught here
+        }
     }
 }
