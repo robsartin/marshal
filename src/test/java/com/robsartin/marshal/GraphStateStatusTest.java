@@ -1,6 +1,8 @@
 package com.robsartin.marshal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 import org.junit.jupiter.api.Test;
 
@@ -36,5 +38,27 @@ class GraphStateStatusTest {
         assertThat(g.status(c)).isEqualTo(Status.SKIPPED);
         assertThat(g.status(indep)).isEqualTo(Status.WAITING);
         g.invariant();
+    }
+
+    @Test
+    void failRejectsNonRunningNode() {
+        GraphState g = new GraphState();
+        Node a = ctx -> {}, b = ctx -> {};
+        g.addNode(spec(a)); g.addNode(spec(b));
+
+        assertThatIllegalStateException().isThrownBy(() -> g.fail(a, Status.FAILED));
+
+        g.markReady(b); g.markRunning(b); g.markCompleted(b);
+        assertThatIllegalStateException().isThrownBy(() -> g.fail(b, Status.FAILED));
+    }
+
+    @Test
+    void failRejectsInvalidCause() {
+        GraphState g = new GraphState();
+        Node a = ctx -> {};
+        g.addNode(spec(a));
+        g.markReady(a); g.markRunning(a);
+
+        assertThatIllegalArgumentException().isThrownBy(() -> g.fail(a, Status.WAITING));
     }
 }

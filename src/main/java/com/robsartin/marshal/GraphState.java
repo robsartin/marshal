@@ -116,6 +116,7 @@ public final class GraphState implements Invariant {
         if (cause != Status.FAILED && cause != Status.TIMED_OUT) {
             throw new IllegalArgumentException("cause must be FAILED or TIMED_OUT: " + cause);
         }
+        expect(n, Status.RUNNING);
         status.put(n, cause);
         for (Node s : Set.copyOf(successors.get(n))) skip(s);
         assert holds();
@@ -124,7 +125,7 @@ public final class GraphState implements Invariant {
     private void skip(Node n) {
         Status cur = status.get(n);
         if (cur == Status.COMPLETED || cur == Status.FAILED || cur == Status.TIMED_OUT
-                || cur == Status.SKIPPED || cur == Status.RUNNING) {
+                || cur == Status.SKIPPED || cur == Status.RUNNING || cur == Status.UNREACHABLE) {
             return;                       // already terminal or in-flight; do not disturb
         }
         status.put(n, Status.SKIPPED);
