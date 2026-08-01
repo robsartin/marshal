@@ -77,4 +77,24 @@ class MarshalMutationTest {
         assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
         assertThat(r.statusOf(child)).isNull();
     }
+
+    @Test
+    void nodeAddedWithDanglingPredecessorFailsOriginNotCrashesRun() {
+        Marshal m = newMarshal();
+        Node neverRegistered = ctx -> {};
+        Node child = ctx -> {};
+        Node origin = ctx -> ctx.addNode(NodeSpec.of(child)
+                .predecessors(Set.of(neverRegistered))
+                .name("child")
+                .build());
+        Node independent = ctx -> {};
+        m.register(NodeSpec.of(origin).name("origin").build());
+        m.register(NodeSpec.of(independent).name("independent").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
+        assertThat(r.statusOf(child)).isNull();
+        assertThat(r.statusOf(independent)).isEqualTo(Status.COMPLETED);
+    }
 }

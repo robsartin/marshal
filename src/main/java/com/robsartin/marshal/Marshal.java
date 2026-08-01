@@ -133,10 +133,15 @@ public final class Marshal {
      * thrown and the caller marks the originating node {@link Status#FAILED}.
      *
      * <p>Validation simulates the batch's node membership in buffer order (an {@link
-     * Mutation.AddNode} makes its node valid to reference later in the same batch; an {@link
+     * Mutation.AddNode} makes its node valid to reference later in the same batch, but only
+     * after its own declared predecessors/conflicts are checked — see below; an {@link
      * Mutation.RemoveNode} makes it invalid to reference later) and rejects:
      *
      * <ul>
+     *   <li>an {@link Mutation.AddNode} whose {@link NodeSpec#predecessors()} or {@link
+     *       NodeSpec#conflicts()} reference a node not present at that point in the batch, or
+     *       whose conflicts include the node itself — mirroring what {@link GraphState#addNode}
+     *       requires when it wires those declared edges/conflicts immediately
      *   <li>an {@link Mutation.AddEdge} or {@link Mutation.AddConflict} referencing a node not
      *       present at that point in the batch ("dangling reference")
      *   <li>an {@link Mutation.AddConflict} between a node and itself
@@ -159,7 +164,24 @@ public final class Marshal {
         present.addAll(g.nodes());
         for (Mutation mu : batch) {
             switch (mu) {
-                case Mutation.AddNode a -> present.add(a.spec().behavior());
+                case Mutation.AddNode a -> {
+                    NodeSpec spec = a.spec();
+                    Node self = spec.behavior();
+                    for (Node p : spec.predecessors()) {
+                        if (!present.contains(p)) {
+                            throw new MutationRejected("AddNode declares dangling predecessor: " + p);
+                        }
+                    }
+                    for (Node c : spec.conflicts()) {
+                        if (c == self) {
+                            throw new MutationRejected("AddNode declares self-conflict: " + spec);
+                        }
+                        if (!present.contains(c)) {
+                            throw new MutationRejected("AddNode declares dangling conflict: " + c);
+                        }
+                    }
+                    present.add(self);
+                }
                 case Mutation.RemoveNode rn -> present.remove(rn.node());
                 case Mutation.AddEdge e -> {
                     if (!present.contains(e.predecessor()) || !present.contains(e.successor())) {
