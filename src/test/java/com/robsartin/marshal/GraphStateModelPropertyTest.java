@@ -11,6 +11,7 @@ import net.jqwik.api.Combinators;
 import net.jqwik.api.ForAll;
 import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
+import net.jqwik.api.statistics.Statistics;
 
 /**
  * Model-based property test: drives random command sequences through both {@link GraphState}
@@ -25,12 +26,27 @@ import net.jqwik.api.Provide;
  * a generated {@code List<Command>}, replayed against one fresh {@link GraphState} and one
  * fresh {@link ReferenceGraphModel} per try — the same shadow-verification goal, achieved with
  * jqwik's current API.
+ *
+ * <p><b>Distinct node instances:</b> each {@code ADD_NODE} command must produce a genuinely new
+ * {@link Node}. A non-capturing lambda such as {@code ctx -> {}} has no per-instance state, so
+ * the JVM's {@code LambdaMetafactory} caches and reuses a single shared instance for every
+ * evaluation of that expression — every "new" node would in fact be the same object, collapsing
+ * the whole graph to one node ({@code GraphState.addNode} is idempotent on identity) and making
+ * every edge command a same-node no-op. This test instead allocates a fresh anonymous class
+ * instance per node, which the JVM cannot fold into a singleton.
+ *
+ * <p><b>Self-guarding coverage:</b> a regression back to the shared-instance bug (or any other
+ * change that makes edge/removal commands silently stop applying) is caught automatically via
+ * jqwik {@link Statistics} coverage checks at the bottom of the property, not just by eyeballing
+ * try counts — see {@code assertCoverage()}.
  */
 class GraphStateModelPropertyTest {
 
     private enum Kind {
         ADD_NODE,
         ADD_EDGE,
+        REMOVE_EDGE,
+        REMOVE_NODE,
         COMPLETE
     }
 
@@ -46,6 +62,8 @@ class GraphStateModelPropertyTest {
             apply(cmd, engine, oracle, created);
             check(engine, oracle, created);
         }
+
+        assertCoverage();
     }
 
     @Provide
@@ -58,19 +76,61 @@ class GraphStateModelPropertyTest {
     private static void apply(Command cmd, GraphState engine, ReferenceGraphModel oracle, List<Node> created) {
         switch (cmd.kind()) {
             case ADD_NODE -> {
-                Node n = ctx -> {};
+                // Distinct instance per node -- see class javadoc. A non-capturing lambda would
+                // be cached as a single shared instance by the JVM and silently collapse the
+                // whole graph to one node.
+                Node n = new Node() {
+                    @Override
+                    public void execute(ExecutionContext ctx) {}
+                };
                 created.add(n);
                 engine.addNode(NodeSpec.of(n).build());
                 oracle.addNode(n);
             }
             case ADD_EDGE -> {
-                if (created.size() < 2) return;
-                Node a = created.get(cmd.i1() % created.size());
-                Node b = created.get(cmd.i2() % created.size());
-                if (a != b && !engine.wouldIntroduceCycle(a, b)) {
-                    engine.addEdge(a, b);
-                    oracle.addEdge(a, b);
+                boolean applied = false;
+                if (created.size() >= 2) {
+                    Node a = created.get(cmd.i1() % created.size());
+                    Node b = created.get(cmd.i2() % created.size());
+                    if (a != b
+                            && engine.contains(a)
+                            && engine.contains(b)
+                            && !engine.wouldIntroduceCycle(a, b)) {
+                        engine.addEdge(a, b);
+                        oracle.addEdge(a, b);
+                        applied = true;
+                    }
                 }
+                Statistics.label("edgeApplied").collect(applied);
+            }
+            case REMOVE_EDGE -> {
+                boolean applied = false;
+                if (created.size() >= 2) {
+                    Node a = created.get(cmd.i1() % created.size());
+                    Node b = created.get(cmd.i2() % created.size());
+                    if (a != b
+                            && engine.contains(a)
+                            && engine.contains(b)
+                            && engine.successors(a).contains(b)) {
+                        engine.removeEdge(a, b);
+                        oracle.removeEdge(a, b);
+                        applied = true;
+                    }
+                }
+                Statistics.label("edgeRemoved").collect(applied);
+            }
+            case REMOVE_NODE -> {
+                boolean applied = false;
+                if (!created.isEmpty()) {
+                    Node n = created.get(cmd.i1() % created.size());
+                    if (engine.contains(n)) {
+                        engine.removeNode(n);
+                        oracle.removeNode(n);
+                        created.remove(n);
+                        applied = true;
+                    }
+                }
+                Statistics.label("nodeRemoved").collect(applied);
             }
             case COMPLETE -> {
                 if (created.isEmpty()) return;
@@ -93,5 +153,26 @@ class GraphStateModelPropertyTest {
             assertThat(engine.predecessors(n)).isEqualTo(oracle.predecessors(n));
             assertThat(engine.remainingPreds(n)).isEqualTo(oracle.remainingPreds(n));
         }
+    }
+
+    /**
+     * Fails the property if, across the whole run (all tries), edge or node removal commands
+     * essentially never fire. This is the regression guard for the shared-lambda-instance bug:
+     * under that bug every "distinct" node was actually the same object, so {@code a != b} was
+     * always false and {@code edgeApplied} would sit at 0% no matter how many tries ran.
+     */
+    private static void assertCoverage() {
+        Statistics.label("edgeApplied")
+                .coverage(coverage -> coverage.check(true).percentage(p -> {
+                    assertThat(p).isGreaterThan(10.0);
+                }));
+        Statistics.label("edgeRemoved")
+                .coverage(coverage -> coverage.check(true).count(c -> {
+                    assertThat(c).isGreaterThan(0);
+                }));
+        Statistics.label("nodeRemoved")
+                .coverage(coverage -> coverage.check(true).count(c -> {
+                    assertThat(c).isGreaterThan(0);
+                }));
     }
 }
