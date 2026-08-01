@@ -58,7 +58,7 @@ public enum ExecutionKind { IO, CPU }
 public record NodeSpec(
     Node behavior,
     int priority,               // higher = scheduled first among eligible nodes
-    Duration timeout,           // null / ZERO = no timeout
+    Duration timeout,           // null = no timeout; a zero or negative Duration is rejected
     ExecutionKind kind,         // default IO
     Set<Node> predecessors,
     Set<Node> conflicts,

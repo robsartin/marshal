@@ -12,7 +12,7 @@
 
 - Java **21+**; group and base package **`com.robsartin.marshal`**.
 - **No Spring dependency** anywhere in `main`; the library must be consumable from Spring Boot by wrapping it in a `@Bean`.
-- Gradle runs on **JDK 21** — on this host the default JDK may be newer, so run with `JAVA_HOME` pointed at a 21 toolchain (e.g. `mise exec java@21 -- ./gradlew ...` or `JAVA_HOME=$(mise where java@21) ./gradlew ...`). The build also pins a Gradle **toolchain** of 21 so compilation is deterministic regardless of launcher JVM.
+- Gradle runs on **JDK 21**. This host has it via Homebrew `openjdk@21` at `/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home` (the default JDK is 25, which the pinned Gradle 8.10.2 cannot launch on). Run **every** Gradle command with that JDK: `export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home` first, then `./gradlew ...`. The build also pins a Gradle **toolchain** of 21 so compilation is deterministic regardless of launcher JVM.
 - **Tests run with assertions enabled (`-ea`)** — the invariant discipline depends on it. The Gradle `test` task sets `jvmArgs("-ea")`.
 - **Node identity is object reference.** All node-keyed maps/sets use `IdentityHashMap` / `Collections.newSetFromMap(new IdentityHashMap<>())`. Never rely on `Node.equals`.
 - **TDD, always:** red → green → refactor → commit. The failing test runs and fails *before* the implementation exists.
@@ -181,7 +181,7 @@ class SmokeTest {
 
 - [ ] **Step 7: Run and verify green**
 
-Run: `JAVA_HOME=$(mise where java@21) ./gradlew test`
+Run: `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home ./gradlew test`
 Expected: PASS (confirms toolchain, JUnit, and `-ea` are all wired).
 
 - [ ] **Step 8: Commit**
@@ -1963,7 +1963,7 @@ Plus a short "Using marshal from Spring Boot" note: wrap `Marshal.create()` (or 
 
 - [ ] **Step 4: Run the full gate**
 
-Run: `JAVA_HOME=$(mise where java@21) ./gradlew clean check`
+Run: `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home ./gradlew clean check`
 Expected: PASS — `spotlessCheck`, all tests with `-ea`, `jacocoTestCoverageVerification` (line > 80%, branch > 65%), and the ArchUnit rules. If coverage falls short, add targeted tests for the uncovered branches (e.g. `removeEdge` on a completed predecessor, `conflictGroup` sugar, idempotent `addNode`).
 
 - [ ] **Step 5: Commit**
