@@ -94,6 +94,62 @@ class GraphStateEdgesTest {
     }
 
     @Test
+    void addNodeIsIdempotentOnReRegistration() {
+        GraphState g = new GraphState();
+        Node a = ctx -> {};
+        NodeSpec original = NodeSpec.of(a).priority(1).name("original").build();
+        NodeSpec resubmitted = NodeSpec.of(a).priority(99).name("resubmitted").build();
+        g.addNode(original);
+        g.addNode(resubmitted); // same identity; must be a no-op, not an overwrite
+
+        assertThat(g.spec(a)).isSameAs(original);
+        assertThat(g.spec(a).priority()).isEqualTo(1);
+        assertThat(g.nodes()).hasSize(1);
+        g.invariant();
+    }
+
+    @Test
+    void removeEdgeAfterPredecessorAlreadyCompletedDoesNotDoubleDecrement() {
+        // markCompleted() already decremented b's remainingPreds when a finished; a later,
+        // unrelated removeEdge(a, b) call must not decrement it again (which would drive it
+        // negative and desynchronize it from the live-predecessor count invariant checks).
+        GraphState g = new GraphState();
+        Node a = ctx -> {}, b = ctx -> {};
+        g.addNode(spec(a));
+        g.addNode(spec(b));
+        g.addEdge(a, b);
+        g.markReady(a);
+        g.markRunning(a);
+        g.markCompleted(a);
+        assertThat(g.remainingPreds(b)).isEqualTo(0);
+
+        g.removeEdge(a, b);
+
+        assertThat(g.remainingPreds(b)).isEqualTo(0);
+        assertThat(g.predecessors(b)).isEmpty();
+        g.invariant();
+    }
+
+    @Test
+    void addEdgeFromAlreadyCompletedPredecessorDoesNotBlockSuccessor() {
+        // Wiring an edge to a node that already finished must not make its new successor wait:
+        // the predecessor's requirement is already satisfied.
+        GraphState g = new GraphState();
+        Node a = ctx -> {}, b = ctx -> {};
+        g.addNode(spec(a));
+        g.addNode(spec(b));
+        g.markReady(a);
+        g.markRunning(a);
+        g.markCompleted(a);
+
+        g.addEdge(a, b);
+
+        assertThat(g.remainingPreds(b)).isEqualTo(0);
+        assertThat(g.predecessors(b)).containsExactly(a);
+        g.invariant();
+    }
+
+    @Test
     void invariantDetectsDanglingPredecessorNotVisibleFromSuccessorsPass() throws Exception {
         // Corrupts the predecessors index directly (bypassing addEdge) to simulate the
         // corruption class invariant() exists to catch per ADR-0015: a stray entry in

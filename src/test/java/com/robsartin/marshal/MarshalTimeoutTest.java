@@ -2,6 +2,7 @@ package com.robsartin.marshal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.robsartin.marshal.support.InlineExecutor;
 import com.robsartin.marshal.support.ManualTimeouts;
 import java.time.Duration;
 import java.util.Set;
@@ -43,5 +44,34 @@ class MarshalTimeoutTest {
         assertThat(r.statusOf(slow)).isEqualTo(Status.TIMED_OUT);
         assertThat(r.statusOf(dependent)).isEqualTo(Status.SKIPPED);
         runner.shutdownNow();
+    }
+
+    @Test
+    void threeArgConstructorUsesNoOpTimeoutsAndIgnoresDeclaredTimeout() {
+        // The 3-arg Marshal(ioLane, cpuLane, cpuPermits) constructor defaults to a no-op
+        // Timeouts: arm() is a deliberate no-op, so a node's declared timeout is never actually
+        // enforced -- it simply runs to completion.
+        var inline = new InlineExecutor();
+        Marshal m = new Marshal(inline, inline, 4);
+        Node quick = ctx -> {};
+        m.register(
+                NodeSpec.of(quick).timeout(Duration.ofMillis(1)).name("quick").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(quick)).isEqualTo(Status.COMPLETED);
+    }
+
+    @Test
+    void fourArgCreateFactoryProducesAWorkingMarshal() {
+        var inline = new InlineExecutor();
+        ManualTimeouts timeouts = new ManualTimeouts();
+        Marshal m = Marshal.create(4, inline, inline, timeouts);
+        Node n = ctx -> {};
+        m.register(NodeSpec.of(n).name("n").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(n)).isEqualTo(Status.COMPLETED);
     }
 }

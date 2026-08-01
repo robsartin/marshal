@@ -3,6 +3,8 @@ package com.robsartin.marshal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.robsartin.marshal.support.InlineExecutor;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -96,5 +98,147 @@ class MarshalMutationTest {
         assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
         assertThat(r.statusOf(child)).isNull();
         assertThat(r.statusOf(independent)).isEqualTo(Status.COMPLETED);
+    }
+
+    @Test
+    void removeNodeMutationDeletesVictimBeforeItEverRuns() {
+        Marshal m = newMarshal();
+        boolean[] victimRan = {false};
+        Node victim = ctx -> victimRan[0] = true;
+        Node origin = ctx -> ctx.removeNode(victim);
+        m.register(NodeSpec.of(origin).name("origin").build());
+        // victim depends on origin, so it is still WAITING (not yet dispatched) when origin's
+        // execute() buffers the removal.
+        m.register(
+                NodeSpec.of(victim).predecessors(Set.of(origin)).name("victim").build());
+
+        RunReport r = m.run();
+
+        assertThat(victimRan[0]).isFalse();
+        assertThat(r.statusOf(origin)).isEqualTo(Status.COMPLETED);
+        assertThat(r.statusOf(victim)).isNull(); // gone from the graph entirely, not just skipped
+    }
+
+    @Test
+    void conflictMutationWiresAMutexBetweenAlreadyRegisteredNodes() {
+        Marshal m = newMarshal();
+        Node a = ctx -> {};
+        Node b = ctx -> {};
+        Node origin = ctx -> ctx.conflict(a, b);
+        m.register(NodeSpec.of(a).name("a").build());
+        m.register(NodeSpec.of(b).name("b").build());
+        m.register(NodeSpec.of(origin).name("origin").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.COMPLETED);
+        assertThat(r.statusOf(a)).isEqualTo(Status.COMPLETED);
+        assertThat(r.statusOf(b)).isEqualTo(Status.COMPLETED);
+    }
+
+    @Test
+    void conflictMutationRejectsSelfConflictAndFailsOrigin() {
+        Marshal m = newMarshal();
+        AtomicReference<Node> originRef = new AtomicReference<>();
+        Node origin = ctx -> ctx.conflict(originRef.get(), originRef.get());
+        originRef.set(origin);
+        m.register(NodeSpec.of(origin).name("origin").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
+    }
+
+    @Test
+    void conflictMutationRejectsDanglingReferenceAndFailsOrigin() {
+        Marshal m = newMarshal();
+        Node a = ctx -> {};
+        Node neverRegistered = ctx -> {};
+        Node origin = ctx -> ctx.conflict(a, neverRegistered);
+        m.register(NodeSpec.of(a).name("a").build());
+        m.register(NodeSpec.of(origin).name("origin").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
+    }
+
+    @Test
+    void addNodeMutationDeclaringSelfConflictFailsOrigin() {
+        Marshal m = newMarshal();
+        AtomicReference<Node> childRef = new AtomicReference<>();
+        Node origin = ctx -> {
+            Node child = childRef.get();
+            ctx.addNode(
+                    NodeSpec.of(child).conflicts(Set.of(child)).name("child").build());
+        };
+        childRef.set(ctx -> {});
+        m.register(NodeSpec.of(origin).name("origin").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
+    }
+
+    @Test
+    void addNodeMutationDeclaringDanglingConflictFailsOrigin() {
+        Marshal m = newMarshal();
+        Node neverRegistered = ctx -> {};
+        Node child = ctx -> {};
+        Node origin = ctx -> ctx.addNode(NodeSpec.of(child)
+                .conflicts(Set.of(neverRegistered))
+                .name("child")
+                .build());
+        m.register(NodeSpec.of(origin).name("origin").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.FAILED);
+        assertThat(r.statusOf(child)).isNull();
+    }
+
+    @Test
+    void sameBatchCycleThroughNewlyAddedNodesLeavesThemUnreachable() {
+        // Documented limitation (see Marshal.applyMutations javadoc): an AddEdge validated
+        // within a batch only consults wouldIntroduceCycle() for endpoints that already exist in
+        // the committed graph. Two brand-new nodes wired into a mutual cycle in the same batch
+        // slip past that check, get applied, and then sit WAITING forever (each waits on the
+        // other) -- reported as UNREACHABLE at quiescence, not silently dropped or crashed.
+        Marshal m = newMarshal();
+        Node x = ctx -> {};
+        Node y = ctx -> {};
+        Node origin = ctx -> {
+            ctx.addNode(NodeSpec.of(x).name("x").build());
+            ctx.addNode(NodeSpec.of(y).name("y").build());
+            ctx.addEdge(x, y);
+            ctx.addEdge(y, x);
+        };
+        m.register(NodeSpec.of(origin).name("origin").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(origin)).isEqualTo(Status.COMPLETED);
+        assertThat(r.statusOf(x)).isEqualTo(Status.UNREACHABLE);
+        assertThat(r.statusOf(y)).isEqualTo(Status.UNREACHABLE);
+    }
+
+    @Test
+    void isCompletedReflectsGraphStateForKnownAndUnknownNodes() {
+        Marshal m = newMarshal();
+        List<Boolean> observed = new ArrayList<>();
+        Node other = ctx -> {};
+        Node neverRegistered = ctx -> {};
+        Node checker = ctx -> {
+            observed.add(ctx.isCompleted(other)); // other's predecessor edge guarantees it ran first
+            observed.add(ctx.isCompleted(neverRegistered)); // null-safe: unknown nodes are not completed
+        };
+        m.register(NodeSpec.of(other).name("other").build());
+        m.register(
+                NodeSpec.of(checker).predecessors(Set.of(other)).name("checker").build());
+
+        RunReport r = m.run();
+
+        assertThat(r.statusOf(checker)).isEqualTo(Status.COMPLETED);
+        assertThat(observed).containsExactly(true, false);
     }
 }
