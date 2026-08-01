@@ -1,5 +1,6 @@
 package com.robsartin.marshal;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -25,20 +26,41 @@ import java.util.concurrent.LinkedBlockingQueue;
  * validation rules and a documented limitation around cycles formed entirely through
  * same-batch-added nodes.
  *
- * <p>MVP scope: node timeouts are not enforced (Task 9).
+ * <p>Per-node timeouts (see {@link NodeSpec#timeout()}) are enforced via an injected {@link
+ * Timeouts}: on dispatch, a watchdog is armed; if it fires before the node's worker posts {@link
+ * Event.Completed}, the worker thread is interrupted and the node is marked {@link
+ * Status#TIMED_OUT}. Honoring {@link Thread#interrupt()} is part of the {@link Node} contract.
  */
 public final class Marshal {
+    private static final Timeouts NO_OP_TIMEOUTS = new Timeouts() {
+        @Override
+        public void arm(Node node, Duration budget, Runnable onExpiry) {}
+
+        @Override
+        public void cancel(Node node) {}
+    };
+
     private final GraphState g = new GraphState();
     private final Executor ioLane;
     private final Executor cpuLane;
     private final int cpuPermits;
+    private final Timeouts timeouts;
     private final BlockingQueue<Event> events = new LinkedBlockingQueue<>();
     private final Map<Node, Throwable> failures = new IdentityHashMap<>();
 
+    // Written on the worker thread (before Node.execute), read on the timeout/watchdog thread
+    // (to interrupt the worker) — must be a thread-safe map.
+    private final Map<Node, Thread> workerThreads = Collections.synchronizedMap(new IdentityHashMap<>());
+
     public Marshal(Executor ioLane, Executor cpuLane, int cpuPermits) {
+        this(ioLane, cpuLane, cpuPermits, NO_OP_TIMEOUTS);
+    }
+
+    public Marshal(Executor ioLane, Executor cpuLane, int cpuPermits, Timeouts timeouts) {
         this.ioLane = ioLane;
         this.cpuLane = cpuLane;
         this.cpuPermits = cpuPermits;
+        this.timeouts = timeouts;
     }
 
     public Node register(NodeSpec spec) {
@@ -64,19 +86,25 @@ public final class Marshal {
         int freeCpu = cpuPermits;
         int inFlight = 0;
 
-        promoteReady();
-        List<Selection.Dispatch> toStart = Selection.select(g, ready(), running(), freeCpu, Integer.MAX_VALUE);
-        for (Selection.Dispatch d : toStart) {
-            freeCpu = dispatch(d, freeCpu);
-            inFlight++;
-        }
+        Dispatched initial = redispatch(freeCpu);
+        freeCpu = initial.freeCpu();
+        inFlight += initial.dispatched();
 
         while (inFlight > 0) {
             Event ev = take();
             if (ev instanceof Event.Completed c) {
+                // inFlight decrements ONLY here: the worker always eventually posts Completed
+                // when execute() returns, even after being interrupted by a timeout. A TimedOut
+                // event never touches inFlight — it just marks the node terminal and frees its
+                // CPU permit; the dispatch slot is retired only when this Completed finally
+                // arrives.
                 inFlight--;
                 Node n = c.node();
-                if (g.status(n) != Status.RUNNING) continue; // idempotency guard (used in Task 9)
+                workerThreads.remove(n);
+                if (g.status(n) != Status.RUNNING) {
+                    continue; // idempotency guard: late Completed after this node already timed out
+                }
+                timeouts.cancel(n);
                 if (c.outcome() instanceof Outcome.Failure f) {
                     g.fail(n, Status.FAILED);
                     failures.put(n, f.cause());
@@ -91,22 +119,55 @@ public final class Marshal {
                 }
                 if (g.spec(n).kind() == ExecutionKind.CPU) freeCpu++;
 
-                promoteReady();
-                List<Selection.Dispatch> next = Selection.select(g, ready(), running(), freeCpu, Integer.MAX_VALUE);
-                for (Selection.Dispatch d : next) {
-                    freeCpu = dispatch(d, freeCpu);
-                    inFlight++;
-                }
+                Dispatched next = redispatch(freeCpu);
+                freeCpu = next.freeCpu();
+                inFlight += next.dispatched();
+            } else if (ev instanceof Event.TimedOut t) {
+                Node n = t.node();
+                // Completed may have already won the race (worker finished just before the
+                // watchdog fired); if so this node is no longer RUNNING and there is nothing to
+                // do. inFlight is untouched either way — see the Completed branch above.
+                if (g.status(n) != Status.RUNNING) continue;
+                g.fail(n, Status.TIMED_OUT);
+                if (g.spec(n).kind() == ExecutionKind.CPU) freeCpu++;
+
+                Dispatched next = redispatch(freeCpu);
+                freeCpu = next.freeCpu();
+                inFlight += next.dispatched();
             }
         }
         return report();
     }
 
+    private record Dispatched(int freeCpu, int dispatched) {}
+
+    private Dispatched redispatch(int freeCpu) {
+        promoteReady();
+        List<Selection.Dispatch> next = Selection.select(g, ready(), running(), freeCpu, Integer.MAX_VALUE);
+        for (Selection.Dispatch d : next) {
+            freeCpu = dispatch(d, freeCpu);
+        }
+        return new Dispatched(freeCpu, next.size());
+    }
+
     private int dispatch(Selection.Dispatch d, int freeCpu) {
         Node n = d.node();
         g.markRunning(n);
+        Duration timeout = g.spec(n).timeout();
+        if (timeout != null) {
+            timeouts.arm(n, timeout, () -> {
+                // Post TimedOut before interrupting: events is a FIFO queue, so this guarantees
+                // the event loop processes TimedOut before any Completed the interrupted worker
+                // goes on to post — otherwise a worker that wakes and returns fast enough could
+                // win the race and get recorded as COMPLETED instead of TIMED_OUT.
+                events.add(new Event.TimedOut(n));
+                Thread worker = workerThreads.get(n);
+                if (worker != null) worker.interrupt();
+            });
+        }
         Executor lane = d.lane() == ExecutionKind.CPU ? cpuLane : ioLane;
         lane.execute(() -> {
+            workerThreads.put(n, Thread.currentThread());
             BufferingExecutionContext ctx = new BufferingExecutionContext(g::isCompletedSafe);
             Outcome outcome;
             try {
