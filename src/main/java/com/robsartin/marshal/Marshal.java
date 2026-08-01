@@ -15,8 +15,12 @@ import java.util.concurrent.LinkedBlockingQueue;
  * ready nodes selected by {@link Selection} to an injected lane {@link Executor}, and
  * drives an event loop to quiescence.
  *
- * <p>MVP scope: buffered mutations are drained but not applied (Task 7), and node
- * timeouts are not enforced (Task 9).
+ * <p>On successful completion, a node's buffered mutations ({@link BufferingExecutionContext})
+ * are validated and applied atomically to the graph before the node is marked completed. If any
+ * mutation in the batch is invalid (e.g. an edge that would introduce a cycle), the whole batch
+ * is rejected and the node is marked {@link Status#FAILED} instead, so its dependents skip.
+ *
+ * <p>MVP scope: node timeouts are not enforced (Task 9).
  */
 public final class Marshal {
     private final GraphState g = new GraphState();
@@ -72,10 +76,14 @@ public final class Marshal {
                     g.fail(n, Status.FAILED);
                     failures.put(n, f.cause());
                 } else {
-                    g.markCompleted(n);
+                    try {
+                        applyMutations(n, c.mutations());
+                        g.markCompleted(n);
+                    } catch (MutationRejected rejected) {
+                        g.fail(n, Status.FAILED);
+                        failures.put(n, rejected);
+                    }
                 }
-                // Buffered mutations (c.mutations()) are intentionally drained-but-not-applied
-                // in the MVP; applying them to the graph is Task 7.
                 if (g.spec(n).kind() == ExecutionKind.CPU) freeCpu++;
 
                 promoteReady();
@@ -109,6 +117,44 @@ public final class Marshal {
 
     private void promoteReady() {
         for (Node n : g.readyPromotable()) g.markReady(n);
+    }
+
+    /**
+     * Validates a completing node's buffered mutation batch, then applies it atomically. If any
+     * mutation is invalid (currently: an {@link Mutation.AddEdge} that would introduce a cycle
+     * between two nodes already present in the graph), no mutation in the batch is applied and
+     * {@link MutationRejected} is thrown; the caller marks the originating node {@link
+     * Status#FAILED}.
+     *
+     * <p>Mutations are applied in buffer order, matching {@link BufferingExecutionContext}'s call
+     * order (callers add a node before wiring edges to it).
+     */
+    private void applyMutations(Node origin, List<Mutation> batch) {
+        for (Mutation mu : batch) {
+            if (mu instanceof Mutation.AddEdge e) {
+                if (g.contains(e.predecessor())
+                        && g.contains(e.successor())
+                        && g.wouldIntroduceCycle(e.predecessor(), e.successor())) {
+                    throw new MutationRejected("edge would introduce a cycle: " + e);
+                }
+            }
+        }
+        for (Mutation mu : batch) {
+            switch (mu) {
+                case Mutation.AddNode a -> g.addNode(a.spec());
+                case Mutation.RemoveNode rn -> g.removeNode(rn.node());
+                case Mutation.AddEdge e -> g.addEdge(e.predecessor(), e.successor());
+                case Mutation.RemoveEdge e -> g.removeEdge(e.predecessor(), e.successor());
+                case Mutation.AddConflict cf -> g.addConflict(cf.a(), cf.b());
+            }
+        }
+        promoteReady();
+    }
+
+    private static final class MutationRejected extends RuntimeException {
+        MutationRejected(String message) {
+            super(message);
+        }
     }
 
     private Set<Node> ready() {

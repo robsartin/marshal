@@ -1,7 +1,5 @@
 package com.robsartin.marshal;
 
-import java.util.Set;
-
 public sealed interface Mutation {
     record AddNode(NodeSpec spec) implements Mutation {}
 
@@ -12,6 +10,4 @@ public sealed interface Mutation {
     record RemoveEdge(Node predecessor, Node successor) implements Mutation {}
 
     record AddConflict(Node a, Node b) implements Mutation {}
-
-    record AddConflictGroup(Set<Node> nodes) implements Mutation {}
 }
