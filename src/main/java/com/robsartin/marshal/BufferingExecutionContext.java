@@ -7,11 +7,18 @@ import java.util.function.Predicate;
 
 /** Buffers graph mutations in call order without touching any graph. Not thread-safe. */
 public final class BufferingExecutionContext implements ExecutionContext {
+    private final String runId;
     private final Predicate<Node> completedView;
     private final List<Mutation> buffer = new ArrayList<>();
 
-    public BufferingExecutionContext(Predicate<Node> completedView) {
+    public BufferingExecutionContext(String runId, Predicate<Node> completedView) {
+        this.runId = runId;
         this.completedView = completedView;
+    }
+
+    @Override
+    public String runId() {
+        return runId;
     }
 
     @Override
