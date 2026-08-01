@@ -1,17 +1,22 @@
 package com.robsartin.marshal;
 
+import java.lang.System.Logger.Level;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.stream.Collectors;
 
 /**
  * Deterministic single-threaded scheduler (MVP). Owns a {@link GraphState}, dispatches
@@ -34,6 +39,23 @@ import java.util.concurrent.LinkedBlockingQueue;
  * Status#TIMED_OUT}. Honoring {@link Thread#interrupt()} is part of the {@link Node} contract.
  */
 public final class Marshal implements AutoCloseable {
+    private static final System.Logger LOG = System.getLogger(Marshal.class.getName());
+
+    // Ambient run-id, readable via #currentRunId() by user code running inside Node.execute() on
+    // a worker thread that only has the ExecutionContext, not this Marshal instance. Set/cleared
+    // around each node's execute() call in #dispatch — see the worker Runnable below.
+    private static final ThreadLocal<String> CURRENT_RUN_ID = new ThreadLocal<>();
+
+    /**
+     * The run id ambient on the calling thread, if that thread is currently executing a node's
+     * {@link Node#execute(ExecutionContext)} on behalf of some {@link Marshal#run()}. Empty on any
+     * other thread (including the thread that called {@code run()} itself, unless its lane
+     * executor happens to run work inline on that same thread).
+     */
+    public static Optional<String> currentRunId() {
+        return Optional.ofNullable(CURRENT_RUN_ID.get());
+    }
+
     private static final Timeouts NO_OP_TIMEOUTS = new Timeouts() {
         @Override
         public void arm(Node node, Duration budget, Runnable onExpiry) {}
@@ -54,6 +76,13 @@ public final class Marshal implements AutoCloseable {
 
     private boolean started;
     private boolean closed;
+
+    // Minted once at the start of run(); read on the scheduler thread throughout drive() and
+    // captured into each dispatch's worker closure. Volatile so a worker thread reads the value
+    // published by run() rather than a stale/torn one (belt-and-braces: submitting to a standard
+    // Executor already establishes happens-before, but this keeps the field visibly safe on its
+    // own terms).
+    private volatile String runId;
     private final BlockingQueue<Event> events = new LinkedBlockingQueue<>();
     private final Map<Node, Throwable> failures = new IdentityHashMap<>();
 
@@ -134,13 +163,31 @@ public final class Marshal implements AutoCloseable {
             throw new IllegalStateException("Marshal.run() is single-use");
         }
         started = true;
+        runId = UUID.randomUUID().toString().substring(0, 8);
+        LOG.log(Level.INFO, "run " + runId + " starting with " + g.nodes().size() + " node(s)");
         try {
-            return drive();
+            RunReport report = drive();
+            LOG.log(Level.INFO, "run " + runId + " complete: " + summarize(report));
+            return report;
         } finally {
             if (ownsResources) {
                 close();
             }
         }
+    }
+
+    /** A tally of terminal statuses (e.g. {@code {COMPLETED=3, FAILED=1}}) for the run-end log. */
+    private static String summarize(RunReport report) {
+        Map<Status, Long> tally = report.statuses().values().stream()
+                .collect(Collectors.groupingBy(s -> s, () -> new EnumMap<>(Status.class), Collectors.counting()));
+        return tally.toString();
+    }
+
+    /** Stable per-log correlation token for a node: its declared name, else an identity fallback. */
+    private String token(Node n) {
+        NodeSpec spec = g.spec(n);
+        String name = spec == null ? null : spec.name();
+        return name != null ? name : "node#" + Integer.toHexString(System.identityHashCode(n));
     }
 
     /**
@@ -198,14 +245,20 @@ public final class Marshal implements AutoCloseable {
                 if (c.outcome() instanceof Outcome.Failure f) {
                     g.fail(n, Status.FAILED);
                     failures.put(n, f.cause());
+                    LOG.log(Level.ERROR, "run " + runId + ": " + token(n) + " FAILED", f.cause());
                 } else {
                     try {
                         applyMutations(n, c.mutations());
                         g.markCompleted(n);
                         completedNodes.add(n);
+                        LOG.log(Level.DEBUG, "run " + runId + ": " + token(n) + " COMPLETED");
                     } catch (MutationRejected rejected) {
                         g.fail(n, Status.FAILED);
                         failures.put(n, rejected);
+                        LOG.log(
+                                Level.WARNING,
+                                "run " + runId + ": " + token(n) + " mutation batch rejected: "
+                                        + rejected.getMessage());
                     }
                 }
                 if (g.spec(n).kind() == ExecutionKind.CPU) freeCpu++;
@@ -220,6 +273,7 @@ public final class Marshal implements AutoCloseable {
                 // do. inFlight is untouched either way — see the Completed branch above.
                 if (g.status(n) != Status.RUNNING) continue;
                 g.fail(n, Status.TIMED_OUT);
+                LOG.log(Level.WARNING, "run " + runId + ": " + token(n) + " TIMED_OUT");
                 if (g.spec(n).kind() == ExecutionKind.CPU) freeCpu++;
 
                 Dispatched next = redispatch(freeCpu);
@@ -244,6 +298,10 @@ public final class Marshal implements AutoCloseable {
     private int dispatch(Selection.Dispatch d, int freeCpu) {
         Node n = d.node();
         g.markRunning(n);
+        LOG.log(
+                Level.DEBUG,
+                "run " + runId + ": dispatching " + token(n) + " to " + d.lane() + " lane, priority "
+                        + g.spec(n).priority());
         Duration timeout = g.spec(n).timeout();
         if (timeout != null) {
             timeouts.arm(n, timeout, () -> {
@@ -259,13 +317,16 @@ public final class Marshal implements AutoCloseable {
         Executor lane = d.lane() == ExecutionKind.CPU ? cpuLane : ioLane;
         lane.execute(() -> {
             workerThreads.put(n, Thread.currentThread());
-            BufferingExecutionContext ctx = new BufferingExecutionContext(completedNodes::contains);
+            BufferingExecutionContext ctx = new BufferingExecutionContext(runId, completedNodes::contains);
             Outcome outcome;
+            CURRENT_RUN_ID.set(runId);
             try {
                 n.execute(ctx);
                 outcome = Outcome.SUCCESS;
             } catch (Throwable t) {
                 outcome = new Outcome.Failure(t);
+            } finally {
+                CURRENT_RUN_ID.remove();
             }
             events.add(new Event.Completed(n, outcome, ctx.drain()));
         });
@@ -382,6 +443,7 @@ public final class Marshal implements AutoCloseable {
                 case Mutation.AddConflict cf -> g.addConflict(cf.a(), cf.b());
             }
         }
+        LOG.log(Level.DEBUG, "run " + runId + ": " + token(origin) + " applied " + batch.size() + " mutation(s)");
         promoteReady();
     }
 

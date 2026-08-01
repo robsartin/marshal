@@ -4,6 +4,9 @@ import java.util.Set;
 
 /** Handle a running node uses to read state and buffer graph mutations. */
 public interface ExecutionContext {
+    /** The id of the {@link Marshal#run()} this node is executing within. */
+    String runId();
+
     boolean isCompleted(Node node);
 
     void addNode(NodeSpec spec);

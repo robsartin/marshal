@@ -10,7 +10,7 @@ class BufferingExecutionContextTest {
     @Test
     void buffersMutationsInOrderAndDrainsOnce() {
         Node added = ctx -> {};
-        BufferingExecutionContext ctx = new BufferingExecutionContext(n -> false);
+        BufferingExecutionContext ctx = new BufferingExecutionContext("run-1", n -> false);
         ctx.addNode(NodeSpec.of(added).build());
         ctx.addEdge(added, added); // order preserved even if nonsensical here
 
@@ -24,11 +24,17 @@ class BufferingExecutionContextTest {
     @Test
     void conflictGroupExpandsToPairwiseAddConflict() {
         Node a = ctx -> {}, b = ctx -> {}, c = ctx -> {};
-        BufferingExecutionContext ctx = new BufferingExecutionContext(n -> false);
+        BufferingExecutionContext ctx = new BufferingExecutionContext("run-1", n -> false);
         ctx.conflictGroup(Set.of(a, b, c));
         long pairs = ctx.drain().stream()
                 .filter(m -> m instanceof Mutation.AddConflict)
                 .count();
         assertThat(pairs).isEqualTo(3); // {a,b},{a,c},{b,c}
+    }
+
+    @Test
+    void exposesRunIdPassedAtConstruction() {
+        BufferingExecutionContext ctx = new BufferingExecutionContext("run-42", n -> false);
+        assertThat(ctx.runId()).isEqualTo("run-42");
     }
 }
