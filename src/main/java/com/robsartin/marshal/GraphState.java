@@ -19,6 +19,12 @@ public final class GraphState implements Invariant {
         return Collections.newSetFromMap(new IdentityHashMap<>());
     }
 
+    private static Set<Node> identityCopy(Set<Node> src) {
+        Set<Node> copy = idSet();
+        copy.addAll(src);
+        return copy;
+    }
+
     // ---- mutation -------------------------------------------------------
 
     public void addNode(NodeSpec spec) {
@@ -59,9 +65,9 @@ public final class GraphState implements Invariant {
 
     public void removeNode(Node n) {
         if (!specs.containsKey(n)) return;
-        for (Node s : Set.copyOf(successors.get(n))) removeEdge(n, s);
-        for (Node p : Set.copyOf(predecessors.get(n))) removeEdge(p, n);
-        for (Node c : Set.copyOf(conflicts.get(n))) removeConflict(n, c);
+        for (Node s : identityCopy(successors.get(n))) removeEdge(n, s);
+        for (Node p : identityCopy(predecessors.get(n))) removeEdge(p, n);
+        for (Node c : identityCopy(conflicts.get(n))) removeConflict(n, c);
         specs.remove(n);
         status.remove(n);
         successors.remove(n);
@@ -123,6 +129,10 @@ public final class GraphState implements Invariant {
             for (Node b : successors.get(a)) {
                 if (!specs.containsKey(b)) throw new IllegalStateException("dangling successor " + b);
                 if (!predecessors.get(b).contains(a)) throw new IllegalStateException("transpose violated: " + a + "->" + b);
+            }
+            for (Node p : predecessors.get(a)) {
+                if (!specs.containsKey(p)) throw new IllegalStateException("dangling predecessor " + p);
+                if (!successors.get(p).contains(a)) throw new IllegalStateException("transpose violated: " + p + "->" + a);
             }
             for (Node b : conflicts.get(a)) {
                 if (!specs.containsKey(b)) throw new IllegalStateException("dangling conflict " + b);
