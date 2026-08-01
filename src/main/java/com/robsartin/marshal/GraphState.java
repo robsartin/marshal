@@ -92,6 +92,60 @@ public final class GraphState implements Invariant {
         assert holds();
     }
 
+    public void markReady(Node n) {
+        expect(n, Status.WAITING);
+        if (remainingPreds.get(n) != 0) throw new IllegalStateException("preds unmet: " + n);
+        status.put(n, Status.READY);
+        assert holds();
+    }
+
+    public void markRunning(Node n) {
+        expect(n, Status.READY);
+        status.put(n, Status.RUNNING);
+        assert holds();
+    }
+
+    public void markCompleted(Node n) {
+        expect(n, Status.RUNNING);
+        status.put(n, Status.COMPLETED);
+        for (Node s : successors.get(n)) remainingPreds.merge(s, -1, Integer::sum);
+        assert holds();
+    }
+
+    public void fail(Node n, Status cause) {
+        if (cause != Status.FAILED && cause != Status.TIMED_OUT) {
+            throw new IllegalArgumentException("cause must be FAILED or TIMED_OUT: " + cause);
+        }
+        status.put(n, cause);
+        for (Node s : Set.copyOf(successors.get(n))) skip(s);
+        assert holds();
+    }
+
+    private void skip(Node n) {
+        Status cur = status.get(n);
+        if (cur == Status.COMPLETED || cur == Status.FAILED || cur == Status.TIMED_OUT
+                || cur == Status.SKIPPED || cur == Status.RUNNING) {
+            return;                       // already terminal or in-flight; do not disturb
+        }
+        status.put(n, Status.SKIPPED);
+        for (Node s : Set.copyOf(successors.get(n))) skip(s);
+    }
+
+    public Set<Node> readyPromotable() {
+        Set<Node> out = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Node n : specs.keySet()) {
+            if (status.get(n) == Status.WAITING && remainingPreds.get(n) == 0) out.add(n);
+        }
+        return out;
+    }
+
+    private void expect(Node n, Status expected) {
+        require(n);
+        if (status.get(n) != expected) {
+            throw new IllegalStateException("expected " + expected + " but was " + status.get(n) + " for " + n);
+        }
+    }
+
     // ---- queries --------------------------------------------------------
 
     public boolean contains(Node n) { return specs.containsKey(n); }
