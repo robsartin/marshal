@@ -44,4 +44,27 @@ tasks.jacocoTestCoverageVerification {
     }
 }
 
-tasks.check { dependsOn(tasks.jacocoTestCoverageVerification) }
+// ADR 0016: production code depends only on the JDK. Fail the build (locally and in CI)
+// if any external dependency is declared on a production configuration. Test-scope
+// configurations (testImplementation, etc.) are intentionally not checked.
+val verifyNoRuntimeDependencies by tasks.registering {
+    group = "verification"
+    description = "Fails if production code declares any external dependency (ADR 0016: JDK-only)."
+    doLast {
+        val productionConfigs = listOf("api", "implementation", "compileOnly", "runtimeOnly")
+        val offenders = productionConfigs.flatMap { name ->
+            (configurations.findByName(name)?.dependencies ?: emptyList<Dependency>())
+                .filterIsInstance<ExternalModuleDependency>()
+                .map { "$name: ${it.group}:${it.name}:${it.version ?: ""}" }
+        }
+        if (offenders.isNotEmpty()) {
+            throw GradleException(
+                "Production code must depend only on the JDK (ADR 0016). " +
+                    "Remove these or record a superseding ADR:\n  " +
+                    offenders.joinToString("\n  ")
+            )
+        }
+    }
+}
+
+tasks.check { dependsOn(tasks.jacocoTestCoverageVerification, verifyNoRuntimeDependencies) }

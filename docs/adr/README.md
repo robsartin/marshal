@@ -50,3 +50,6 @@
 - [15. Make representation invariants first-class and machine-checked](0015-invariants-first-class.md) — _Accepted_
   Denormalized indexes over the ground truth can drift; mutable state implements `Invariant`, asserted under `-ea` and shadowed by jqwik model-based tests against a reference oracle, enforced by ArchUnit.
   Related: [2. Develop with Test-Driven Development](0002-use-test-driven-development.md), [10. Enforce JVM quality gates and layered tests](0010-jvm-quality-and-tests.md), [14. Dependency and conflict modeling](0014-dependency-and-conflict-modeling.md)
+- [16. Production code depends only on the JDK (zero runtime dependencies)](0016-jdk-only-production-dependencies.md) — _Accepted_
+  The published artifact must pull in nothing but the Java standard library; a Gradle check wired into `check` fails the build on any production `api`/`implementation`/`compileOnly`/`runtimeOnly` dependency. Test-scope deps are unrestricted.
+  Related: [10. Enforce JVM quality gates and layered tests](0010-jvm-quality-and-tests.md), [5. Make CI the merge gate](0005-ci-is-the-merge-gate.md)
