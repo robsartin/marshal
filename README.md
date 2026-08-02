@@ -79,3 +79,7 @@ singleton-scoped for the application's lifetime.
 Status: implemented — MVP scheduler, mutation-commit protocol, timeouts,
 priority, conflicts, and the two-lane concurrent executor are all in place and
 covered by the full CI gate (tests, coverage, ArchUnit, jqwik property test).
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). Copyright 2026 Rob Sartin.
