@@ -1,0 +1,46 @@
+name: ADR immutability
+
+# ADR 0001: ADRs are immutable once Accepted — a decision that changes is
+# superseded by a NEW ADR, not edited. This check fails a PR that modifies an
+# existing numbered ADR file. Adding new ADRs and editing the index README are
+# fine. A legitimate supersession (status/link update) can bypass this by
+# adding the `adr-supersede` label to the PR.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ADRs are immutable
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail on edits to existing ADRs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          modified=$(git diff --name-only --diff-filter=M "$BASE_SHA" HEAD -- docs/adr \
+            | grep -E 'docs/adr/[0-9]{4}-.*\.md$' || true)
+          if [ -z "$modified" ]; then
+            echo "No existing ADRs modified. ✓"
+            exit 0
+          fi
+          if printf '%s' "$LABELS" | tr ',' '\n' | grep -qx 'adr-supersede'; then
+            echo "Label 'adr-supersede' present — allowing ADR edits (supersession). ✓"
+            echo "$modified"
+            exit 0
+          fi
+          echo "::error::ADRs are immutable once Accepted (ADR 0001). Supersede with a NEW ADR instead of editing."
+          echo "Modified existing ADR(s):"
+          echo "$modified"
+          echo "If this is a legitimate supersession, add the 'adr-supersede' label to this PR."
+          exit 1
