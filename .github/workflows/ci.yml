@@ -28,7 +28,7 @@ jobs:
           java-version: "21"
 
       - name: Set up Gradle (with caching + wrapper validation)
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       # The full ADR-mandated gate: Spotless format check, tests with -ea,
       # JaCoCo coverage verification (line > 80% / branch > 65%), and ArchUnit.
