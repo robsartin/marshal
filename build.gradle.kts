@@ -16,7 +16,7 @@ repositories { mavenCentral() }
 dependencies {
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.jqwik)
-    testImplementation(libs.archunit.junit5)
+    testImplementation(libs.archunit.junit6)
     testImplementation(libs.assertj)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
