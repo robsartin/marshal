@@ -8,5 +8,5 @@ assertj = "3.27.7"
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 jqwik = { module = "net.jqwik:jqwik", version.ref = "jqwik" }
-archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
+archunit-junit6 = { module = "com.tngtech.archunit:archunit-junit6", version.ref = "archunit" }
 assertj = { module = "org.assertj:assertj-core", version.ref = "assertj" }
