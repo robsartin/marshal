@@ -1,7 +1,7 @@
 plugins {
     `java-library`
     jacoco
-    id("com.diffplug.spotless") version "8.10.4"
+    id("com.diffplug.spotless") version "8.11.0"
 }
 
 group = "com.robsartin"
